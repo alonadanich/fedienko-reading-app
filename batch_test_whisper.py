@@ -7,7 +7,7 @@ from transformers import WhisperProcessor, WhisperForConditionalGeneration
 
 
 # 1. ФУНКЦІЯ ОЧИЩЕННЯ ТЕКСТУ (Нормалізація)
-# Цей фрагмент коду ви зможете додати в ДОДАТОК Б вашої дипломної роботи
+
 def normalize_text(text):
     if pd.isna(text):
         return ""

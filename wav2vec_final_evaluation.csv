@@ -1,0 +1,28 @@
+﻿Назва файлу,Розпізнаний текст Wav2Vec,Очищений текст,Очікуваний текст,Точний збіг
+a.wav,а,а,а,True
+a1.wav,а,а,а,True
+am.wav,а м,а м,ам,False
+an1.wav,ам,ам,ан,False
+au.wav,ау,ау,ау,True
+au1.wav,ау,ау,ау,True
+m.wav,ми,ми,м,False
+m1.wav,,,м,False
+ma.wav,ма,ма,ма,True
+ma1.wav,ме,ме,ма,False
+mama.wav,мама,мама,мама,True
+mama1.wav,мама,мама,мама,True
+mamo.wav,мамо,мамо,мамо,True
+mamu.wav,маму,маму,маму,True
+mamu1.wav,маму,маму,маму,True
+mu.wav,м,м,му,False
+mu1.wav,мо,мо,му,False
+n.wav,не,не,н,False
+n1.wav,ні,ні,н,False
+o.wav,о,о,о,True
+o1.wav,о,о,о,True
+r.wav,ра,ра,р,False
+r1.wav,гамли,гамли,р,False
+u.wav,у,у,у,True
+u1.wav,у,у,у,True
+um.wav,улі,улі,ум,False
+um1.wav,у,у,ум,False

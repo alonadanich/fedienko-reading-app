@@ -2,82 +2,78 @@ import os
 import librosa
 import soundfile as sf
 import numpy as np
+import warnings
 
-# Шляхи до папок
-SOURCE_DIRS = ["dataset/mother", "dataset/child"]
+# Вимикаємо системні попередження від librosa та numba для чистоти консолі
+warnings.filterwarnings("ignore")
+
+INPUT_DIR = "dataset"
 OUTPUT_DIR = "dataset_augmented"
 
-# Створюємо базову папку для аугментованих даних
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
-def add_white_noise(data, noise_factor=0.005):
+def add_noise(data, noise_factor=0.005):
     noise = np.random.randn(len(data))
     return data + noise_factor * noise
 
 
-def augment_audio(file_path, output_folder, file_prefix):
-    """
-    Читає оригінальний файл і створює 4 нові версії.
-    """
-    audio, sr = librosa.load(file_path, sr=16000)
-    base_name = os.path.basename(file_path).split(".")[0]
+print("Починаємо глибоку розумну аугментацію...")
 
-    # 1. Збереження оригіналу копією
-    sf.write(
-        os.path.join(output_folder, f"{file_prefix}_{base_name}_orig.wav"), audio, sr
-    )
+all_wav_files = []
+for root, dirs, files in os.walk(INPUT_DIR):
+    for file in files:
+        if file.endswith(".wav"):
+            all_wav_files.append(os.path.join(root, file))
 
-    # 2. Уповільнення (діти часто тягнуть звуки)
-    audio_slow = librosa.effects.time_stretch(audio, rate=0.8)
-    sf.write(
-        os.path.join(output_folder, f"{file_prefix}_{base_name}_slow.wav"),
-        audio_slow,
-        sr,
-    )
+if not all_wav_files:
+    print(f"Помилка: Не знайдено жодного .wav файлу у папці {INPUT_DIR}.")
+else:
+    print(f"Знайдено {len(all_wav_files)} оригінальних файлів. Генеруємо...")
 
-    # 3. Прискорення
-    audio_fast = librosa.effects.time_stretch(audio, rate=1.2)
-    sf.write(
-        os.path.join(output_folder, f"{file_prefix}_{base_name}_fast.wav"),
-        audio_fast,
-        sr,
-    )
+for i, file_path in enumerate(all_wav_files):
+    speaker_folder = os.path.basename(os.path.dirname(file_path))
+    filename_clean = os.path.splitext(os.path.basename(file_path))[0]
 
-    # 4. Зміна тону (робимо голос вищим - Pitch Shift)
-    audio_high = librosa.effects.pitch_shift(audio, sr=sr, n_steps=2)
-    sf.write(
-        os.path.join(output_folder, f"{file_prefix}_{base_name}_high.wav"),
-        audio_high,
-        sr,
-    )
+    if "_" in filename_clean:
+        base_name = filename_clean
+    else:
+        base_name = f"{speaker_folder}_{filename_clean}"
 
-    # 5. Додавання шуму (імітація поганого мікрофона)
-    audio_noisy = add_white_noise(audio)
-    sf.write(
-        os.path.join(output_folder, f"{file_prefix}_{base_name}_noise.wav"),
-        audio_noisy,
-        sr,
-    )
+    y, sr = librosa.load(file_path, sr=16000)
 
+    sf.write(os.path.join(OUTPUT_DIR, f"{base_name}_orig.wav"), y, sr)
 
-print("Починаємо аугментацію даних...")
+    y_pitch_up = librosa.effects.pitch_shift(y, sr=sr, n_steps=2)
+    sf.write(os.path.join(OUTPUT_DIR, f"{base_name}_pitchup.wav"), y_pitch_up, sr)
 
-for src_dir in SOURCE_DIRS:
-    if not os.path.exists(src_dir):
-        print(f"Папка {src_dir} не знайдена. Пропускаю.")
-        continue
+    y_pitch_down = librosa.effects.pitch_shift(y, sr=sr, n_steps=-2)
+    sf.write(os.path.join(OUTPUT_DIR, f"{base_name}_pitchdown.wav"), y_pitch_down, sr)
 
-    prefix = "mother" if "mother" in src_dir else "child"
+    y_noisy = add_noise(y, noise_factor=0.005)
+    sf.write(os.path.join(OUTPUT_DIR, f"{base_name}_noisy.wav"), y_noisy, sr)
 
-    for filename in os.listdir(src_dir):
-        if filename.endswith(".wav"):
-            file_path = os.path.join(src_dir, filename)
-            try:
-                augment_audio(file_path, OUTPUT_DIR, prefix)
-            except Exception as e:
-                print(f"Помилка з файлом {filename}: {e}")
+    duration = librosa.get_duration(y=y, sr=sr)
+    if duration > 0.25:  # Трохи збільшили базовий поріг
+        try:
+            y_fast = librosa.effects.time_stretch(y, rate=1.15)
+            sf.write(os.path.join(OUTPUT_DIR, f"{base_name}_fast.wav"), y_fast, sr)
 
-# Рахуємо результат
-total_files = len(os.listdir(OUTPUT_DIR)) if os.path.exists(OUTPUT_DIR) else 0
-print(f"Аугментацію завершено! У папці {OUTPUT_DIR} тепер {total_files} файлів.")
+            y_slow = librosa.effects.time_stretch(y, rate=0.85)
+            sf.write(os.path.join(OUTPUT_DIR, f"{base_name}_slow.wav"), y_slow, sr)
+        except Exception:
+            # Якщо librosa падає на специфічному файлі, просто додаємо шум
+            y_very_noisy = add_noise(y, noise_factor=0.01)
+            sf.write(
+                os.path.join(OUTPUT_DIR, f"{base_name}_verynoisy.wav"), y_very_noisy, sr
+            )
+    else:
+        y_very_noisy = add_noise(y, noise_factor=0.01)
+        sf.write(
+            os.path.join(OUTPUT_DIR, f"{base_name}_verynoisy.wav"), y_very_noisy, sr
+        )
+
+    if (i + 1) % 10 == 0:
+        print(f"Оброблено {i + 1} / {len(all_wav_files)} файлів...")
+
+print(f"\nАугментацію завершено! Перевірте папку {OUTPUT_DIR}.")

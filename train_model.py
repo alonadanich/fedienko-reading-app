@@ -31,7 +31,7 @@ DATA_DIR = "dataset_augmented"
 X = []
 y = []
 
-print("2. Екстракція векторів з 630 файлів... (Це може зайняти 5-10 хвилин)")
+print("2. Екстракція векторів з файлів... (Це може зайняти 5-10 хвилин)")
 files = [f for f in os.listdir(DATA_DIR) if f.endswith(".wav")]
 
 for i, filename in enumerate(files):
@@ -66,7 +66,7 @@ X_train, X_test, y_train, y_test = train_test_split(
 
 print("4. Тренування класифікатора Support Vector Machine...")
 # Лінійне ядро (kernel='linear') є математично найкращим вибором для багатовимірних векторів Wav2Vec
-clf = SVC(kernel="linear", probability=True, random_state=42)
+clf = SVC(kernel="linear", C=10.0, probability=True, random_state=42)
 clf.fit(X_train, y_train)
 
 print("5. Оцінка моделі...")

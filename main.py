@@ -1,167 +1,83 @@
 import os
-import tempfile
-import librosa
-import torch
-import numpy as np
-import joblib
-from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.middleware.cors import CORSMiddleware
-from transformers import Wav2Vec2Processor, Wav2Vec2Model
-
-os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
-os.environ["HF_HUB_OFFLINE"] = "0"
-
-app = FastAPI(
-    title="Fedienko Reading App API (Machine Learning Edition)", version="2.0.0"
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-print("1. Завантаження екстрактора Wav2Vec 2.0...")
-model_name = "anton-l/wav2vec2-large-xlsr-53-ukrainian"
-processor = Wav2Vec2Processor.from_pretrained(model_name)
-wav2vec_model = Wav2Vec2Model.from_pretrained(model_name)
-
-print("2. Завантаження натренованої моделі SVM...")
-clf = joblib.load("fedienko_svm_model.pkl")
-le = joblib.load("label_encoder.pkl")
-print("ML Сервер повністю готовий до роботи!")
-
-# Словник для перекладу кирилиці з фронтенду у латинські мітки моделі
-CYRILLIC_TO_LATIN = {
-    "а": "a",
-    "ак": "ak",
-    "ал": "al",
-    "ам": "am",
-    "ан": "an",
-    "ао": "ao",
-    "ас": "as",
-    "ау": "au",
-    "і": "i",
-    "ік": "ik",
-    "іл": "il",
-    "ім": "im",
-    "ін": "in",
-    "іс": "is",
-    "к": "k",
-    "ка": "ka",
-    "кі": "ki",
-    "ко": "ko",
-    "ку": "ku",
-    "ки": "ky",
-    "л": "l",
-    "ла": "la",
-    "лі": "li",
-    "ло": "lo",
-    "лу": "lu",
-    "ли": "ly",
-    "м": "m",
-    "ма": "ma",
-    "мі": "mi",
-    "мо": "mo",
-    "му": "mu",
-    "ми": "my",
-    "н": "n",
-    "на": "na",
-    "ні": "ni",
-    "но": "no",
-    "ну": "nu",
-    "ни": "ny",
-    "о": "o",
-    "ок": "ok",
-    "ол": "ol",
-    "ом": "om",
-    "он": "on",
-    "ос": "os",
-    "с": "s",
-    "са": "sa",
-    "сі": "si",
-    "со": "so",
-    "су": "su",
-    "си": "sy",
-    "у": "u",
-    "уа": "ua",
-    "ук": "uk",
-    "ул": "ul",
-    "ум": "um",
-    "ун": "un",
-    "ус": "us",
-    "и": "y",
-    "ик": "yk",
-    "ил": "yl",
-    "им": "ym",
-    "ин": "yn",
-    "ис": "ys",
-}
+import subprocess
+import sys
+import flet as ft
+from levels_config import LEVELS
 
 
-def get_embedding(file_path):
-    audio_array, sr = librosa.load(file_path, sr=16000)
-    audio_array, _ = librosa.effects.trim(audio_array, top_db=20)
-    inputs = processor(
-        audio_array, sampling_rate=16000, return_tensors="pt", padding=True
-    )
-    with torch.no_grad():
-        outputs = wav2vec_model(**inputs)
-    return outputs.last_hidden_state.mean(dim=1).squeeze().numpy()
+def main(page: ft.Page):
+    page.title = "Вчимося читати з Капітошкою"
+    page.bgcolor = "#E6F2FF"
+    page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
+    page.vertical_alignment = ft.MainAxisAlignment.CENTER
+    page.window_width = 800
+    page.window_height = 600
 
+    status_text = ft.Text("", size=16, color=ft.Colors.BLUE_900)
 
-@app.post("/api/compare")
-async def compare_audio(
-    target_sound: str = Form(...),
-    etalon_file: UploadFile = File(...),
-    child_file: UploadFile = File(...),
-):
-    try:
-        # Нам більше не потрібен файл мами для порівняння, але ми його приймаємо,
-        # щоб не ламати логіку вашого фронтенду.
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_child:
-            tmp_child.write(await child_file.read())
-            child_path = tmp_child.name
+    def go_to_level(e, level_id):
+        if not LEVELS[level_id]["is_unlocked"]:
+            status_text.value = f"Замочок «{LEVELS[level_id]['letter']}» ще закритий! Спочатку пройди попередні рівні."
+            page.update()
+            return
 
-        # 1. Отримуємо вектор з голосу дитини
-        emb = get_embedding(child_path)
-        os.unlink(child_path)
-
-        # 2. Передаємо вектор у нашу SVM модель
-        probabilities = clf.predict_proba([emb])[0]
-
-        # Беремо не 1, а 3 найімовірніші варіанти (Top-3 Accuracy)
-        # np.argsort сортує індекси від найменшої ймовірності до найбільшої,
-        # [-3:] бере три останні (найбільші), [::-1] перевертає їх за спаданням
-        top_3_indices = np.argsort(probabilities)[-3:][::-1]
-
-        # Отримуємо назви цих трьох звуків
-        top_3_labels_latin = le.inverse_transform(top_3_indices)
-
-        # 3. Перевірка результату
-        target_cyrillic = target_sound.lower().strip()
-        target_latin = CYRILLIC_TO_LATIN.get(target_cyrillic, target_cyrillic)
-
-        # Якщо цільовий звук є хоча б в ТРІЙЦІ лідерів нейромережі
-        if target_latin in top_3_labels_latin:
-            verdict = "success"
-            message = f"Чудово! ШІ розпізнав звук [{target_cyrillic.upper()}]"
-            score = 100.0
+        target_script = "ui_app1.py" if level_id == 1 else "level_u.py"
+        if os.path.exists(target_script):
+            status_text.value = f"Запускаємо рівень {level_id}: Буква {LEVELS[level_id]['letter']}..."
+            page.update()
+            subprocess.Popen([sys.executable, target_script])
         else:
-            verdict = "retry"
-            # Показуємо, що саме почула модель, для дебагу
-            top_3_display = [lbl.upper() for lbl in top_3_labels_latin]
-            message = f"Спробуй ще раз! Модель почула {top_3_display}"
-            score = 0.0
+            status_text.value = f"Перехід на рівень {level_id}: Буква {LEVELS[level_id]['letter']}"
+            page.update()
 
-        return {
-            "target_sound": target_sound,
-            "score": score,
-            "threshold_applied": 0.0,
-            "verdict": verdict,
-            "message": message,
-        }
+    locks_row_1 = ft.Row(alignment=ft.MainAxisAlignment.CENTER, spacing=20)
+    locks_row_2 = ft.Row(alignment=ft.MainAxisAlignment.CENTER, spacing=20)
 
-    except Exception as e:
-        return {"error": str(e)}
+    for level_id, data in LEVELS.items():
+        unlocked = data["is_unlocked"]
+        btn_content = ft.Column(
+            controls=[
+                ft.Text(
+                    data["letter"],
+                    size=40,
+                    weight=ft.FontWeight.BOLD,
+                    color=data["color"] if unlocked else ft.Colors.GREY_400,
+                ),
+                ft.Icon(
+                    name=ft.Icons.LOCK_OPEN if unlocked else ft.Icons.LOCK,
+                    color=ft.Colors.GREEN if unlocked else ft.Colors.GREY_400,
+                    size=30,
+                ),
+            ],
+            alignment=ft.MainAxisAlignment.CENTER,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+        level_container = ft.Container(
+            content=btn_content,
+            width=100,
+            height=100,
+            bgcolor=ft.Colors.WHITE,
+            border_radius=15,
+            shadow=ft.BoxShadow(spread_radius=1, blur_radius=5, color=ft.Colors.BLACK12),
+            on_click=lambda e, lid=level_id: go_to_level(e, lid),
+            ink=unlocked,
+        )
+
+        if level_id <= 5:
+            locks_row_1.controls.append(level_container)
+        else:
+            locks_row_2.controls.append(level_container)
+
+    page.add(
+        ft.Text("Обери літеру!", size=35, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_700),
+        ft.Container(height=30),
+        locks_row_1,
+        ft.Container(height=20),
+        locks_row_2,
+        ft.Container(height=20),
+        status_text,
+    )
+
+
+ft.app(target=main)

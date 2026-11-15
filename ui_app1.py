@@ -13,29 +13,52 @@ from transformers import Wav2Vec2Processor, Wav2Vec2Model
 # ==========================================
 print("Завантаження моделей... Зачекайте.")
 os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
-processor = Wav2Vec2Processor.from_pretrained(
-    "anton-l/wav2vec2-large-xlsr-53-ukrainian"
-)
-wav2vec_model = Wav2Vec2Model.from_pretrained(
-    "anton-l/wav2vec2-large-xlsr-53-ukrainian"
-)
+processor = Wav2Vec2Processor.from_pretrained("anton-l/wav2vec2-large-xlsr-53-ukrainian")
+wav2vec_model = Wav2Vec2Model.from_pretrained("anton-l/wav2vec2-large-xlsr-53-ukrainian")
 
 svm_clf = joblib.load("fedienko_svm_model.pkl")
 label_encoder = joblib.load("label_encoder.pkl")
+
+# ДОДАЄМО SILERO VAD (Нейромережевий детектор голосу)
+print("Завантаження VAD детектора...")
+vad_model, vad_utils = torch.hub.load(
+    repo_or_dir='snakers4/silero-vad',
+    model='silero_vad',
+    force_reload=False,
+    trust_repo=True
+)
+(get_speech_timestamps, save_audio, read_audio, VADIterator, collect_chunks) = vad_utils
 
 
 # ==========================================
 # ЛОГІКА ПРОГРАМИ
 # ==========================================
 def predict_phoneme(audio_path):
-    speech, rate = librosa.load(audio_path, sr=16000)
-    speech_trimmed, _ = librosa.effects.trim(speech, top_db=20)
-    if len(speech_trimmed) > 1000:
-        speech = speech_trimmed
+    # 1. Читаємо аудіо за допомогою надійної librosa (замість torchaudio)
+    speech_array, rate = librosa.load(audio_path, sr=16000)
+    
+    # Перетворюємо numpy-масив у PyTorch Tensor для моделі VAD
+    wav = torch.from_numpy(speech_array)
+    
+    # 2. Знаходимо часові мітки (відрізки), де звучить САМЕ ГОЛОС
+    speech_timestamps = get_speech_timestamps(wav, vad_model, sampling_rate=16000)
+    
+    # 3. Якщо голос знайдено - склеюємо лише корисні шматки
+    if len(speech_timestamps) > 0:
+        speech = collect_chunks(speech_timestamps, wav).squeeze().numpy()
+    else:
+        # Якщо голосу не знайдено (напр., суцільна тиша), беремо оригінал
+        speech = wav.squeeze().numpy()
+        
+    # 4. Нормалізуємо гучність
     speech = librosa.util.normalize(speech)
+    
+    # 5. Пропускаємо через Wav2Vec (12-й шар)
     inputs = processor(speech, sampling_rate=16000, return_tensors="pt")
     with torch.no_grad():
-        features = wav2vec_model(**inputs).last_hidden_state
+        outputs = wav2vec_model(**inputs, output_hidden_states=True)
+        features = outputs.hidden_states[12]
+        
     features_mean = features.mean(dim=1).numpy()
     probs = svm_clf.predict_proba(features_mean)[0]
     max_index = np.argmax(probs)
@@ -58,6 +81,7 @@ def main(page: ft.Page):
         "can_record": False,
         "reading_mode": False,
         "step": 0,
+        "current_target": "",
     }
 
     # ==========================================
@@ -240,23 +264,35 @@ def main(page: ft.Page):
 
             try:
                 pred_phoneme, conf = predict_phoneme("live_sample.wav")
-                if pred_phoneme == "a" and conf >= 20.0:
-                    result_text.value = "Супер! Правильно!"
+                
+                # 1. Приводимо все до нижнього регістру та прибираємо пробіли
+                pred_str = str(pred_phoneme).strip().lower()
+                target_str = state["current_target"].strip().lower()
+                
+                # 2. Вирішуємо проблему "Кирилиця vs Латиниця"
+                # (замінюємо українські букви на англійські для чесного порівняння)
+                pred_str = pred_str.replace("у", "u").replace("а", "a")
+                target_str = target_str.replace("у", "u").replace("а", "a")
+
+                # 3. Зменшуємо поріг з 20.0 до 8.0, бо для 63 класів це вже надійний результат
+                if pred_str == target_str and conf >= 8.0:
+                    result_text.value = f"Молодець! (Впевненість: {conf:.1f}%)"
                     result_text.color = "green"
                     kapi_speak("Молодець! Дуже гарно!", "kapi_good_reading.wav")
                     trigger_success()
                     next_step()
                 else:
-                    result_text.value = "Спробуй ще раз! Відкрий ротик ширше!"
+                    # Тепер ви бачитимете на екрані, скільки відсотків не вистачило
+                    result_text.value = f"Спробуй ще раз! (Почуто: {pred_str}, впевненість: {conf:.1f}%)"
                     result_text.color = "orange"
 
-                    kapi_speak(
-                        "Спробуй ще раз! А-а-а!", "kapi_try_again.wav", face="sad"
-                    )
+                    # Визначаємо емоцію залежно від цільової літери
+                    face_type = "u" if "u" in target_str else "a"
+                    kapi_speak("Спробуй ще раз!", "kapi_try_again.wav", face="sad")
 
                     def revert_after_fail():
                         time.sleep(1.5)
-                        kapitoshka_img.src = "kapitoshka_a.png"
+                        kapitoshka_img.src = f"kapitoshka_{face_type}.png"
                         page.update()
                         time.sleep(2)
                         kapitoshka_img.src = "kapitoshka_idle.png"
@@ -331,7 +367,7 @@ def main(page: ft.Page):
         else:
             kapi_speak(
                 "Подумай ще! Обери слово, яке починається на літеру А.",
-                "kapi_wrong.wav",
+                "kapi_wrong_a.wav",
                 face="sad",
             )
 
@@ -460,29 +496,30 @@ def main(page: ft.Page):
         elif step >= 5 and step <= 11:
             state["reading_mode"] = True
             reading_finger.visible = True
+            state["current_target"] = "a"
 
             texts = [
                 (
                     "Час читати! Веди пальчиком по екрану зліва направо. Прочитай велику букву. Зверни увагу, як широко відкривається ротик: А-а-а!",
                     "А",
                     120,
-                ),
-                ("Молодець! А тепер прочитай маленьку букву.", "а", 120),
-                ("Прочитай ці букви, веди пальчиком зліва направо", "А-А-А", 80),
-                ("Тепер маленькі, теж зліва направо.", "а-а-а", 80),
+                ), # Step 5
+                ("Молодець! А тепер прочитай маленьку букву.", "а", 120), # Step 6
+                ("Прочитай ці букви, веди пальчиком зліва направо", "А-А-А", 80), # Step 7
+                ("Тепер маленькі, теж зліва направо.", "а-а-а", 80), # Step 8
                 (
                     "Згадаємо, які звуки називаються голосними? Так, їх можна співати! Проспівай і потягни.",
                     "А-а-а",
                     80,
-                ),
-                ("І наостанок: прочитай", "а", 90),
-                ("А тепер це", "А", 90),
+                ), # Step 9
+                ("І наостанок: прочитай", "а", 90), # Step 10
+                ("А тепер це", "А", 90), # Step 11
             ]
 
             current_task = texts[step - 5]
 
             face_type = "a" if (step == 5 or step == 7) else "idle"
-            kapi_speak(current_task[0], f"kapi_read_step{step}.wav", face=face_type)
+            kapi_speak(current_task[0], f"kapi_read_step{step}_a.wav", face=face_type)
 
             text_widget = ft.Text(
                 current_task[1],
@@ -531,9 +568,7 @@ def main(page: ft.Page):
 
             def go_back():
                 time.sleep(4)
-                trainer_view.visible = False
-                menu_view.visible = True
-                page.update()
+                page.window_close()
 
             threading.Thread(target=go_back).start()
 
@@ -546,11 +581,7 @@ def main(page: ft.Page):
         [
             ft.OutlinedButton(
                 "⬅️ Назад до карти",
-                on_click=lambda e: (
-                    setattr(trainer_view, "visible", False),
-                    setattr(menu_view, "visible", True),
-                    page.update(),
-                ),
+                on_click=lambda e: page.window_close(),
             ),
             ft.Divider(),
             kapitoshka_ui,
@@ -564,58 +595,19 @@ def main(page: ft.Page):
         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
     )
 
-    trainer_view = ft.Container(
-        content=ft.Stack(
+    page.add(
+        ft.Stack(
             balloons
             + [
                 ft.Container(
                     content=trainer_ui, alignment=ft.alignment.top_center, padding=20
                 )
-            ]
-        ),
-        visible=False,
-        expand=True,
+            ],
+            expand=True,
+        )
     )
 
-    # ==========================================
-    # ГОЛОВНЕ МЕНЮ
-    # ==========================================
-    def start_level_1(e):
-        state["step"] = 0
-        menu_view.visible = False
-        trainer_view.visible = True
-        render_step()
-
-    menu_column = ft.Column(
-        [
-            ft.Text(
-                "Буквар Федієнка", size=36, weight="bold", color=ft.Colors.BLUE_900
-            ),
-            ft.ElevatedButton(
-                "🔓 Рівень 1: Буква А",
-                bgcolor=ft.Colors.GREEN_600,
-                color=ft.Colors.WHITE,
-                width=350,
-                height=60,
-                on_click=start_level_1,
-            ),
-            ft.ElevatedButton(
-                "🔒 Рівень 2: Буква У",
-                bgcolor=ft.Colors.GREY_400,
-                color=ft.Colors.WHITE,
-                width=350,
-                height=60,
-            ),
-        ],
-        alignment=ft.MainAxisAlignment.CENTER,
-        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-        spacing=20,
-    )
-    menu_view = ft.Container(
-        content=menu_column, alignment=ft.alignment.center, visible=True, expand=True
-    )
-
-    page.add(menu_view, trainer_view)
+    render_step()
 
 
 ft.app(target=main, assets_dir="assets")

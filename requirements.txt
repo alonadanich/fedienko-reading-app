@@ -1,0 +1,13 @@
+flet
+torch
+transformers
+librosa
+soundfile
+scikit-learn
+imbalanced-learn
+catboost
+joblib
+numpy
+matplotlib
+pydub
+edge-tts
